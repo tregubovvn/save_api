@@ -102,22 +102,19 @@
         throw new FilesApiError('Среда не поддерживает base64-кодирование', 'NO_BASE64');
     }
 
-    // Человекочитаемое описание HTTP-ошибки (текст/JSON из ответа).
-    // ВАЖНО: если тело ответа уже прочитано (res.json() выше), передайте
-    // разобранный объект вторым аргументом — иначе detail будет пустым.
-    async function describeHttpError(res, parsed) {
+    // Человекочитаемое описание HTTP-ошибки. Тело ответа передаётся готовой
+    // строкой (её уже прочитал requestJson) — повторно res.text() не читаем.
+    function describeHttpError(res, parsed, bodyText) {
         if (!res) return '';
         const fromParsed = parsed && (parsed.message || parsed.error);
         if (fromParsed) return `HTTP ${res.status}: ${fromParsed}`;
-        if (typeof res.text !== 'function') return `HTTP ${res.status}`;
         let detail = '';
-        try {
-            const text = await res.text();
+        if (typeof bodyText === 'string' && bodyText) {
             try {
-                const j = JSON.parse(text);
-                detail = j.message || j.error || text.slice(0, 120);
-            } catch (e) { detail = text.slice(0, 120); }
-        } catch (e) { /* тело недоступно — игнорируем */ }
+                const j = JSON.parse(bodyText);
+                detail = j.message || j.error || bodyText.slice(0, 120);
+            } catch (e) { detail = bodyText.slice(0, 120); }
+        }
         return `HTTP ${res.status}${detail ? ': ' + detail : ''}`;
     }
 
@@ -242,6 +239,39 @@
 
         function hasDom() { return typeof document !== 'undefined'; }
 
+        // Единый HTTP-запрос: сетевой сбой → NETWORK, тело читается один раз
+        // и возвращается и разобранным (data), и сырым (text).
+        async function requestJson(url, options, context, networkHint) {
+            let res;
+            try {
+                res = await fetch(url, options);
+            } catch (e) {
+                const hint = networkHint ? ' — ' + networkHint : '';
+                fail(new FilesApiError('Сеть: ' + e.message + hint, 'NETWORK'), context);
+            }
+            let text = '';
+            try { text = await res.text(); } catch (e) { text = ''; }
+            let data = {};
+            if (text) {
+                try { data = JSON.parse(text) || {}; } catch (e) { data = {}; }
+            }
+            return { res, data, text };
+        }
+
+        // Не-2xx превращается в FilesApiError; code может зависеть от статуса.
+        function ensureOk(res, data, text, context, code) {
+            if (res.ok) return;
+            const resolved = typeof code === 'function' ? code(res.status) : code;
+            fail(new FilesApiError(describeHttpError(res, data, text), resolved || 'HTTP'), context);
+        }
+
+        // Токен из аргументов вызова или из хранилища; иначе — ошибка.
+        function requireToken(opts2, service, message, code, context) {
+            const token = opts2.token !== undefined ? opts2.token : getToken(service);
+            if (!token) fail(new FilesApiError(message, code), context);
+            return token;
+        }
+
         /* --------------------- Работа с файлами --------------------- */
 
         // Проверка/запрос права записи в файл (File System Access API)
@@ -344,7 +374,7 @@
                 fileName = handle.name;
             }
 
-            const result = await applyLoadedContent(content, fileName, { source: 'file', handle });
+            const result = applyLoadedContent(content, fileName, { source: 'file', handle });
             if (handle) emit('file-selected', { fileName: handle.name });
             return result;
         }
@@ -388,15 +418,11 @@
             if (!id) fail(new FilesApiError('Не удалось определить ID Gist по ссылке: ' + ref, 'BAD_REF'), 'loadFromGist');
 
             status('Загрузка Gist ' + id + '…');
-            let res, data;
-            try {
-                res = await fetch(GITHUB_API + '/gists/' + id,
-                    token ? { headers: { Authorization: 'Bearer ' + token } } : {});
-                data = await res.json().catch(() => ({}));
-            } catch (e) {
-                fail(new FilesApiError('Сеть: ' + e.message, 'NETWORK'), 'loadFromGist');
-            }
-            if (!res.ok) fail(new FilesApiError(await describeHttpError(res, data), 'HTTP'), 'loadFromGist');
+            const { res, data, text } = await requestJson(
+                GITHUB_API + '/gists/' + id,
+                token ? { headers: { Authorization: 'Bearer ' + token } } : {},
+                'loadFromGist');
+            ensureOk(res, data, text, 'loadFromGist');
 
             const files = data.files || {};
             let fileName = null;
@@ -421,7 +447,7 @@
                 }
             }
 
-            return await applyLoadedContent(file.content, fileName, {
+            return applyLoadedContent(file.content, fileName, {
                 source: 'gist',
                 gist: {
                     gistId: data.id,
@@ -434,7 +460,7 @@
         }
 
         // Общая обработка загруженного содержимого: проверка -> состояние -> событие
-        async function applyLoadedContent(content, fileName, meta) {
+        function applyLoadedContent(content, fileName, meta) {
             if (!content || !String(content).trim()) {
                 fail(new FilesApiError('Файл пуст', 'EMPTY'), 'load:' + meta.source);
             }
@@ -582,16 +608,42 @@
             return null;
         }
 
+        // Фиксация успешной публикации: что и когда опубликовано + сброс dirty.
+        function markPublished(target, url, rawUrl, extra) {
+            state.lastPublish = Object.assign({
+                target, url, rawUrl, content: state.content, at: Date.now(),
+            }, extra || {});
+            state.dirty = false;
+        }
+
+        // Пароль, эндпоинт и папка для серверных операций (publish / list).
+        function resolveServerTarget(opts2, context, passwordMessage) {
+            const password = opts2.password !== undefined ? String(opts2.password) : getToken('server');
+            if (!password) {
+                fail(new FilesApiError(passwordMessage, 'SERVER_PASSWORD_REQUIRED'), context);
+            }
+            const endpoint = String(opts2.endpoint || config.serverEndpoint || '').trim();
+            if (!endpoint) {
+                fail(new FilesApiError('Не задан адрес эндпоинта сервера (serverEndpoint)', 'SERVER_URL_REQUIRED'), context);
+            }
+            const folder = String(opts2.folder || config.serverFolder || '').trim();
+            return { password, endpoint, folder };
+        }
+
+        // 401/403 от сервера публикации — это именно проблема пароля.
+        function serverErrorCode(status) {
+            return (status === 401 || status === 403) ? 'SERVER_AUTH' : 'HTTP';
+        }
+
         // GitHub Gist: если Gist уже привязан (загружен или публиковался) —
         // обновляем его, иначе создаём новый приватный.
         async function publishToGist(opts2 = {}) {
             const blocked = runBeforePublish();
             if (blocked) fail(new FilesApiError(blocked, 'VALIDATION'), 'publishToGist');
 
-            const token = opts2.token !== undefined ? opts2.token : getToken('github');
-            if (!token) {
-                fail(new FilesApiError('Не задан GitHub Token — вызовите setToken("github", "ghp_…")', 'GITHUB_TOKEN_REQUIRED'), 'publishToGist');
-            }
+            const token = requireToken(opts2, 'github',
+                'Не задан GitHub Token — вызовите setToken("github", "ghp_…")',
+                'GITHUB_TOKEN_REQUIRED', 'publishToGist');
 
             const updating = !!(opts2.gistId || state.gistId);
             const filename = opts2.gistFilename || (updating ? state.gistFilename : config.gistFilename);
@@ -601,33 +653,23 @@
                 : GITHUB_API + '/gists';
 
             status(updating ? 'Обновление Gist…' : 'Создание нового Gist…');
-            let res, data;
-            try {
-                res = await fetch(url, {
-                    method: updating ? 'PATCH' : 'POST',
-                    headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        description,
-                        public: false,
-                        files: { [filename]: { content: state.content } },
-                    }),
-                });
-                data = await res.json().catch(() => ({}));
-            } catch (e) {
-                fail(new FilesApiError('Сеть: ' + e.message, 'NETWORK'), 'publishToGist');
-            }
-            if (!res.ok) fail(new FilesApiError(await describeHttpError(res, data), 'HTTP'), 'publishToGist');
+            const { res, data, text } = await requestJson(url, {
+                method: updating ? 'PATCH' : 'POST',
+                headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    description,
+                    public: false,
+                    files: { [filename]: { content: state.content } },
+                }),
+            }, 'publishToGist');
+            ensureOk(res, data, text, 'publishToGist');
 
             state.gistId = data.id;
             state.gistUrl = data.html_url || ('https://gist.github.com/' + data.id);
             state.gistFilename = filename;
             const fd = data.files && data.files[filename];
             state.rawUrl = (fd && fd.raw_url) || null;
-            state.lastPublish = {
-                target: 'gist', url: state.gistUrl, rawUrl: state.rawUrl,
-                content: state.content, at: Date.now(), gistId: data.id,
-            };
-            state.dirty = false;
+            markPublished('gist', state.gistUrl, state.rawUrl, { gistId: data.id });
 
             const result = {
                 target: 'gist',
@@ -648,10 +690,9 @@
             const blocked = runBeforePublish();
             if (blocked) fail(new FilesApiError(blocked, 'VALIDATION'), 'publishToGitverse');
 
-            const token = opts2.token !== undefined ? opts2.token : getToken('gitverse');
-            if (!token) {
-                fail(new FilesApiError('Не задан токен GitVerse — вызовите setToken("gitverse", "…")', 'GITVERSE_TOKEN_REQUIRED'), 'publishToGitverse');
-            }
+            const token = requireToken(opts2, 'gitverse',
+                'Не задан токен GitVerse — вызовите setToken("gitverse", "…")',
+                'GITVERSE_TOKEN_REQUIRED', 'publishToGitverse');
 
             const headers = { Authorization: 'Token ' + token, 'Content-Type': 'application/json' };
             const fileName = withXmlExt(sanitizeFileName(opts2.fileName || state.fileName, 'quiz'));
@@ -660,14 +701,9 @@
             // 1. Найти репозиторий для публикации
             let project = String(opts2.repo || store.getItem(K.gvProject) || '').trim();
             if (!project) {
-                let resList;
-                try {
-                    resList = await fetch(GITVERSE_API + '/user/repos?per_page=100', { headers });
-                } catch (e) {
-                    fail(new FilesApiError('Сеть: ' + e.message, 'NETWORK'), 'publishToGitverse');
-                }
-                if (!resList.ok) fail(new FilesApiError(await describeHttpError(resList), 'HTTP'), 'publishToGitverse');
-                const list = await resList.json().catch(() => ({}));
+                const listed = await requestJson(GITVERSE_API + '/user/repos?per_page=100', { headers }, 'publishToGitverse');
+                ensureOk(listed.res, listed.data, listed.text, 'publishToGitverse');
+                const list = listed.data;
                 const items = Array.isArray(list) ? list : (list.items || list.data || []);
                 const preferred = items.find(p => /moodle|quiz|test/i.test(p.path || p.name || '')) || items[0];
                 if (!preferred) {
@@ -680,19 +716,13 @@
             // 2. Проверка существования файла (нужен blob_id для обновления)
             let branch = opts2.branch || 'master';
             let existingBlob = null;
-            let resFile;
             const fileUrl = GITVERSE_API + '/repos/' + project + '/contents/' + encodeURIComponent(fileName);
-            try {
-                resFile = await fetch(fileUrl, { headers });
-            } catch (e) {
-                fail(new FilesApiError('Сеть: ' + e.message, 'NETWORK'), 'publishToGitverse');
-            }
-            if (resFile.ok) {
-                const info = await resFile.json().catch(() => ({}));
-                existingBlob = info.blob_id || info.sha || null;
-                if (!opts2.branch && info.branch) branch = info.branch;
-            } else if (resFile.status !== 404) {
-                fail(new FilesApiError(await describeHttpError(resFile), 'HTTP'), 'publishToGitverse');
+            const checked = await requestJson(fileUrl, { headers }, 'publishToGitverse');
+            if (checked.res.ok) {
+                existingBlob = checked.data.blob_id || checked.data.sha || null;
+                if (!opts2.branch && checked.data.branch) branch = checked.data.branch;
+            } else if (checked.res.status !== 404) {
+                ensureOk(checked.res, checked.data, checked.text, 'publishToGitverse');
             }
 
             // 3. Создать или обновить файл
@@ -704,25 +734,16 @@
             };
             if (existingBlob) body.blob_id = existingBlob;
 
-            let res;
-            try {
-                res = await fetch(fileUrl, {
-                    method: existingBlob ? 'PUT' : 'POST',
-                    headers,
-                    body: JSON.stringify(body),
-                });
-            } catch (e) {
-                fail(new FilesApiError('Сеть: ' + e.message, 'NETWORK'), 'publishToGitverse');
-            }
-            if (!res.ok) fail(new FilesApiError(await describeHttpError(res), 'HTTP'), 'publishToGitverse');
+            const written = await requestJson(fileUrl, {
+                method: existingBlob ? 'PUT' : 'POST',
+                headers,
+                body: JSON.stringify(body),
+            }, 'publishToGitverse');
+            ensureOk(written.res, written.data, written.text, 'publishToGitverse');
 
             state.gitverseProject = project;
             state.gitverseRawUrl = 'https://gitverse.ru/' + project + '/raw/branch/' + branch + '/' + encodeURIComponent(fileName);
-            state.lastPublish = {
-                target: 'gitverse', url: state.gitverseRawUrl, rawUrl: state.gitverseRawUrl,
-                content: state.content, at: Date.now(), project, branch, fileName,
-            };
-            state.dirty = false;
+            markPublished('gitverse', state.gitverseRawUrl, state.gitverseRawUrl, { project, branch, fileName });
 
             const result = {
                 target: 'gitverse',
@@ -742,15 +763,8 @@
             const blocked = runBeforePublish();
             if (blocked) fail(new FilesApiError(blocked, 'VALIDATION'), 'publishToServer');
 
-            const password = opts2.password !== undefined ? String(opts2.password) : getToken('server');
-            if (!password) {
-                fail(new FilesApiError('Не задан пароль сервера — вызовите setToken("server", "…") или передайте {password}', 'SERVER_PASSWORD_REQUIRED'), 'publishToServer');
-            }
-
-            const endpoint = String(opts2.endpoint || config.serverEndpoint || '').trim();
-            if (!endpoint) {
-                fail(new FilesApiError('Не задан адрес эндпоинта сервера (serverEndpoint)', 'SERVER_URL_REQUIRED'), 'publishToServer');
-            }
+            const { password, endpoint, folder } = resolveServerTarget(opts2, 'publishToServer',
+                'Не задан пароль сервера — вызовите setToken("server", "…") или передайте {password}');
 
             const types = Array.isArray(config.taskTypes) && config.taskTypes.length ? config.taskTypes : DEFAULT_TASK_TYPES;
             const taskType = String(opts2.taskType || config.defaultTaskType || types[0]);
@@ -758,45 +772,30 @@
                 fail(new FilesApiError('Неизвестный тип задания: ' + taskType + ' (допустимо: ' + types.join(', ') + ')', 'VALIDATION'), 'publishToServer');
             }
 
-            const folder = String(opts2.folder || config.serverFolder || '').trim();
             const fileName = opts2.fileName
                 ? withXmlExt(sanitizeFileName(opts2.fileName, taskType))
                 : taskType + '_' + randomTaskNumber() + String(config.serverExt || '.xml');
 
             status('Публикация на сервер…');
-            let res, data;
-            try {
-                res = await fetch(endpoint, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        action: 'publish',
-                        password,
-                        folder,
-                        fileName,
-                        content: state.content,
-                        description: String(opts2.description || ''),
-                    }),
-                });
-                data = await res.json().catch(() => ({}));
-            } catch (e) {
-                fail(new FilesApiError('Сеть: ' + e.message + ' — проверьте адрес эндпоинта и HTTPS', 'NETWORK'), 'publishToServer');
-            }
-            if (!res.ok) {
-                const code = (res.status === 401 || res.status === 403) ? 'SERVER_AUTH' : 'HTTP';
-                fail(new FilesApiError(await describeHttpError(res, data), code), 'publishToServer');
-            }
+            const { res, data, text } = await requestJson(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action: 'publish',
+                    password,
+                    folder,
+                    fileName,
+                    content: state.content,
+                    description: String(opts2.description || ''),
+                }),
+            }, 'publishToServer', 'проверьте адрес эндпоинта и HTTPS');
+            ensureOk(res, data, text, 'publishToServer', serverErrorCode);
 
             // Сервер возвращает url (считаем его истиной); иначе собираем ссылку сами
             const rawUrl = (typeof data.url === 'string' && data.url) ||
                 buildServerFileUrl(config.serverBaseUrl, folder, fileName);
             state.serverEndpoint = endpoint;
-            state.lastPublish = {
-                target: 'server', url: rawUrl, rawUrl,
-                content: state.content, at: Date.now(),
-                endpoint, folder, fileName, taskType,
-            };
-            state.dirty = false;
+            markPublished('server', rawUrl, rawUrl, { endpoint, folder, fileName, taskType });
 
             const result = {
                 target: 'server',
@@ -813,32 +812,16 @@
 
         // Список файлов в папке архива на сервере (действие list того же эндпоинта)
         async function listServerFiles(opts2 = {}) {
-            const password = opts2.password !== undefined ? String(opts2.password) : getToken('server');
-            if (!password) {
-                fail(new FilesApiError('Не задан пароль сервера — вызовите setToken("server", "…")', 'SERVER_PASSWORD_REQUIRED'), 'listServerFiles');
-            }
-            const endpoint = String(opts2.endpoint || config.serverEndpoint || '').trim();
-            if (!endpoint) {
-                fail(new FilesApiError('Не задан адрес эндпоинта сервера (serverEndpoint)', 'SERVER_URL_REQUIRED'), 'listServerFiles');
-            }
-            const folder = String(opts2.folder || config.serverFolder || '').trim();
+            const { password, endpoint, folder } = resolveServerTarget(opts2, 'listServerFiles',
+                'Не задан пароль сервера — вызовите setToken("server", "…")');
 
             status('Запрос списка файлов с сервера…');
-            let res, data;
-            try {
-                res = await fetch(endpoint, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: 'list', password, folder }),
-                });
-                data = await res.json().catch(() => ({}));
-            } catch (e) {
-                fail(new FilesApiError('Сеть: ' + e.message, 'NETWORK'), 'listServerFiles');
-            }
-            if (!res.ok) {
-                const code = (res.status === 401 || res.status === 403) ? 'SERVER_AUTH' : 'HTTP';
-                fail(new FilesApiError(await describeHttpError(res, data), code), 'listServerFiles');
-            }
+            const { res, data, text } = await requestJson(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'list', password, folder }),
+            }, 'listServerFiles');
+            ensureOk(res, data, text, 'listServerFiles', serverErrorCode);
             const files = Array.isArray(data.files) ? data.files : [];
             status('На сервере файлов: ' + files.length);
             return { files, url: data.url || null };
@@ -870,11 +853,11 @@
         /* --------------------------- Токены --------------------------- */
 
         function tokenKey(service) {
-            if (service === 'github') return K.gh;
-            if (service === 'gitverse') return K.gv;
-            if (service === 'server') return K.srv;
-            fail(new FilesApiError('Неизвестный сервис токена: ' + service + ' (github | gitverse | server)', 'BAD_SERVICE'), 'setToken');
-            return null;
+            const key = { github: K.gh, gitverse: K.gv, server: K.srv }[service];
+            if (!key) {
+                fail(new FilesApiError('Неизвестный сервис токена: ' + service + ' (github | gitverse | server)', 'BAD_SERVICE'), 'setToken');
+            }
+            return key;
         }
 
         function setToken(service, value) {
