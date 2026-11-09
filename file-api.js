@@ -30,7 +30,7 @@
     }
 })(typeof self !== 'undefined' ? self : this, function () {
 
-    const VERSION = '1.1.0';
+    const VERSION = '1.2.0';
     const GITHUB_API = 'https://api.github.com';
     const GITVERSE_API = 'https://gitverse.ru/api/v2';
     // Приложение тестирования: ссылка собирается из raw-ссылки опубликованного XML
@@ -40,6 +40,13 @@
     const DEFAULT_SERVER_FOLDER = 'Task_Arhive';
     const DEFAULT_SERVER_BASE_URL = 'https://tregubovvn.ru';
     const DEFAULT_TASK_TYPES = ['ReadTest', 'MoodleTest', 'FormulaTest'];
+    // Приложения тестирования различаются именем параметра со ссылкой на XML:
+    // mt_v2 читает ?name=, rt_v2 — ?file=. Один builder без параметра не может
+    // обслуживать оба — это и было источником неработающих ссылок.
+    const TASK_APPS = {
+        mt_v2: { baseUrl: DEFAULT_TEST_APP_URL, paramName: 'name' },
+        rt_v2: { baseUrl: 'https://tregubovvn.github.io/rt_v2/index.html', paramName: 'file' },
+    };
 
     const DEFAULTS = {
         gistFilename: 'quiz.xml',     // имя файла внутри Gist
@@ -48,6 +55,9 @@
         autoSaveDebounceMs: 1500,     // задержка автосохранения после изменений
         storagePrefix: 'moodleFileApi',
         testAppUrl: DEFAULT_TEST_APP_URL,
+        taskApp: null,                // {baseUrl, paramName}; null — testAppUrl с ?name=
+        collectionFilename: 'collection.md',   // имя файла коллекции внутри Gist
+        singleFlight: true,           // очередь публикаций: параллельные вызовы — по одному
         // --- Публикация на собственный сервер (server/publish.php) ---
         serverEndpoint: DEFAULT_SERVER_ENDPOINT,   // адрес PHP-эндпоинта
         serverFolder: DEFAULT_SERVER_FOLDER,       // папка архива на сервере
@@ -166,19 +176,66 @@
             typeof window.showSaveFilePicker === 'function';
     }
 
+    // Описание приложения тестирования: строка — это baseUrl с параметром ?name=,
+    // объект — {baseUrl, paramName} (у mt_v2 paramName='name', у rt_v2 — 'file').
+    function normalizeTaskApp(app) {
+        if (typeof app === 'string') return { baseUrl: app.trim(), paramName: 'name' };
+        const source = app || {};
+        return {
+            baseUrl: String(source.baseUrl || '').trim(),
+            paramName: String(source.paramName || 'name').trim() || 'name',
+        };
+    }
+
     // Сборка ссылки на приложение тестирования из raw-ссылки на XML и флагов.
     // Названия флагов согласованы с mt_v2 (getUrlFlag): checkmode, headershow,
     // crushmode, randommode.
-    function buildTaskUrlStatic(rawUrl, flags, baseUrl) {
-        const base = String(baseUrl || '').trim();
-        if (!rawUrl || !base) return '';
+    function buildTaskUrlStatic(rawUrl, flags, app) {
+        const { baseUrl, paramName } = normalizeTaskApp(app);
+        if (!rawUrl || !baseUrl) return '';
         let f = '';
         flags = flags || {};
         if (flags.checkmode) f += '&checkmode=true';
         if (flags.headershow) f += '&headershow=true';
         if (flags.crushmode) f += '&crushmode=true';
         if (flags.randommode) f += '&randommode=true';
-        return base + (base.includes('?') ? '&' : '?') + 'name=' + encodeURIComponent(rawUrl) + f;
+        return baseUrl + (baseUrl.includes('?') ? '&' : '?') +
+            encodeURIComponent(paramName) + '=' + encodeURIComponent(rawUrl) + f;
+    }
+
+    // Коллекция — несколько именованных текстов в одном файле Gist.
+    // Формат по умолчанию: секции Markdown «## Название» и текст до следующей.
+    function serializeCollectionMarkdown(items) {
+        return (items || []).map(it => {
+            const name = String(it.name || it.id || '').trim();
+            const text = String(it.text || '').trim();
+            return '## ' + name + '\n\n' + text + '\n';
+        }).join('\n');
+    }
+
+    function parseCollectionMarkdown(md) {
+        const items = [];
+        let cur = null;
+        String(md || '').split(/\r?\n/).forEach(line => {
+            const m = /^##\s+(.+?)\s*$/.exec(line);
+            if (m) {
+                cur = { name: m[1], lines: [] };
+                items.push(cur);
+            } else if (cur) {
+                cur.lines.push(line);
+            }
+        });
+        const used = new Set();
+        return items.map((it, i) => {
+            const base = String(it.name).toLowerCase()
+                .replace(/[^\p{L}\p{N}]+/gu, '-')
+                .replace(/^-+|-+$/g, '') || ('item-' + (i + 1));
+            let id = base;
+            let n = 2;
+            while (used.has(id)) id = base + '-' + (n++);
+            used.add(id);
+            return { id, name: it.name, text: it.lines.join('\n').trim() };
+        });
     }
 
     /* ====================== Фабрика экземпляра API ====================== */
@@ -193,6 +250,7 @@
             autosave: config.storagePrefix + '_autosave',
             lastSave: config.storagePrefix + '_last_save_time',
             gvProject: config.storagePrefix + '_gv_project',
+            drafts: config.storagePrefix + '_drafts',
         };
 
         const state = {
@@ -212,6 +270,11 @@
             gitverseRawUrl: null,
             serverEndpoint: config.serverEndpoint,
             lastPublish: null,            // {target, url, rawUrl, content, at, ...}
+            collectionGistId: null,
+            collectionGistUrl: null,
+            collectionRawUrl: null,
+            flights: {},                  // ключ -> {running, queued}: очередь публикаций
+            drafts: null,                 // id -> текст локальной правки (коллекции)
             listeners: {},                // событие -> Set<fn>
         };
 
@@ -270,6 +333,32 @@
             const token = opts2.token !== undefined ? opts2.token : getToken(service);
             if (!token) fail(new FilesApiError(message, code), context);
             return token;
+        }
+
+        // Очередь на ключ: пока запрос выполняется, следующий не стартует, а ждёт
+        // его завершения. Несколько вызовов за время выполнения схлопываются в один
+        // повторный запуск — он читает уже актуальное состояние.
+        function singleFlight(key, task) {
+            const slot = state.flights[key] || (state.flights[key] = { running: null, queued: null });
+
+            const run = () => {
+                const p = Promise.resolve().then(task);
+                slot.running = p;
+                const cleanup = () => { if (slot.running === p) slot.running = null; };
+                p.then(cleanup, cleanup);
+                return p;
+            };
+
+            if (!slot.running) return run();
+            if (!slot.queued) {
+                const after = () => { slot.queued = null; return run(); };
+                slot.queued = slot.running.then(after, after);
+            }
+            return slot.queued;
+        }
+
+        function publishQueued(key, task) {
+            return config.singleFlight === false ? Promise.resolve().then(task) : singleFlight(key, task);
         }
 
         /* --------------------- Работа с файлами --------------------- */
@@ -840,6 +929,160 @@
             status('Привязка публикации сброшена — следующая публикация создаст новый Gist/файл');
         }
 
+        /* ---------------- Коллекции документов и черновики ---------------- */
+
+        async function saveCollection(opts2 = {}) {
+            const token = requireToken(opts2, 'github',
+                'Не задан GitHub Token — вызовите setToken("github", "ghp_…")',
+                'GITHUB_TOKEN_REQUIRED', 'saveCollection');
+
+            const items = Array.isArray(opts2.items) ? opts2.items : [];
+            if (!items.length) fail(new FilesApiError('Коллекция пуста', 'EMPTY'), 'saveCollection');
+
+            const serialize = typeof opts2.serialize === 'function' ? opts2.serialize : serializeCollectionMarkdown;
+            const content = serialize(items);
+            const fileName = String(opts2.gistFilename || config.collectionFilename || 'collection.md');
+            const gistId = opts2.gistId || state.collectionGistId || null;
+            const headers = { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' };
+            const files = { [fileName]: { content } };
+            let url = GITHUB_API + '/gists';
+            let method = 'POST';
+
+            if (gistId) {
+                url += '/' + gistId;
+                method = 'PATCH';
+                // Прежний файл коллекции удаляем, только если он один в Gist:
+                // чужие файлы не трогаем.
+                const cur = await requestJson(GITHUB_API + '/gists/' + gistId, { headers }, 'saveCollection');
+                ensureOk(cur.res, cur.data, cur.text, 'saveCollection');
+                const names = Object.keys(cur.data.files || {});
+                const old = names.find(n => n !== fileName && /\.md$/i.test(n));
+                if (old && names.length === 1) files[old] = null;
+            }
+
+            status(gistId ? 'Обновление коллекции в Gist…' : 'Создание коллекции в Gist…');
+            const { res, data, text } = await requestJson(url, {
+                method,
+                headers,
+                body: JSON.stringify({
+                    description: opts2.description || 'Коллекция документов',
+                    public: false,
+                    files,
+                }),
+            }, 'saveCollection');
+            ensureOk(res, data, text, 'saveCollection');
+
+            state.collectionGistId = data.id;
+            state.collectionGistUrl = data.html_url || ('https://gist.github.com/' + data.id);
+            const fd = data.files && data.files[fileName];
+            state.collectionRawUrl = (fd && fd.raw_url) || null;
+
+            const result = {
+                target: 'gist',
+                gistId: state.collectionGistId,
+                gistUrl: state.collectionGistUrl,
+                rawUrl: state.collectionRawUrl,
+                fileName,
+                count: items.length,
+            };
+            emit('collection-save', result);
+            status('Коллекция сохранена: ' + result.gistUrl);
+            return result;
+        }
+
+        async function loadCollection(ref, opts2 = {}) {
+            const token = opts2.token !== undefined ? opts2.token : getToken('github');
+            const id = extractGistId(ref);
+            if (!id) fail(new FilesApiError('Не удалось определить ID Gist по ссылке: ' + ref, 'BAD_REF'), 'loadCollection');
+
+            const headers = token ? { Authorization: 'Bearer ' + token } : {};
+            const { res, data, text } = await requestJson(GITHUB_API + '/gists/' + id, { headers }, 'loadCollection');
+            ensureOk(res, data, text, 'loadCollection');
+
+            const files = data.files || {};
+            const names = Object.keys(files);
+            const fileName = names.find(n => n === config.collectionFilename) ||
+                names.find(n => /\.md$/i.test(n)) || names[0];
+            const file = files[fileName];
+            if (!file) fail(new FilesApiError('В Gist нет файлов', 'EMPTY'), 'loadCollection');
+
+            let body = file.content;
+            if (typeof body !== 'string' && file.raw_url) {
+                const raw = await requestJson(file.raw_url, {}, 'loadCollection');
+                ensureOk(raw.res, raw.data, raw.text, 'loadCollection');
+                body = raw.text;
+            }
+
+            const parse = typeof opts2.parse === 'function' ? opts2.parse : parseCollectionMarkdown;
+            const items = parse(body || '');
+            const gist = {
+                gistId: data.id,
+                gistUrl: data.html_url || ('https://gist.github.com/' + data.id),
+                fileName,
+                rawUrl: file.raw_url || null,
+                description: data.description || '',
+            };
+            state.collectionGistId = gist.gistId;
+            state.collectionGistUrl = gist.gistUrl;
+            state.collectionRawUrl = gist.rawUrl;
+
+            const result = { items, gist };
+            emit('collection-load', { count: items.length, gist });
+            status('Коллекция загружена: ' + items.length + ' документ(ов)');
+            return result;
+        }
+
+        /* ------------------------- Черновики ------------------------- */
+
+        function loadDrafts() {
+            if (state.drafts) return state.drafts;
+            state.drafts = {};
+            try {
+                const raw = store.getItem(K.drafts);
+                if (raw) state.drafts = JSON.parse(raw) || {};
+            } catch (e) { state.drafts = {}; }
+            return state.drafts;
+        }
+
+        function persistDrafts() {
+            try { store.setItem(K.drafts, JSON.stringify(state.drafts || {})); } catch (e) { /* ignore */ }
+        }
+
+        function setDraft(id, text) {
+            const key = String(id || '').trim();
+            if (!key) fail(new FilesApiError('Не указан id черновика', 'VALIDATION'), 'setDraft');
+            const drafts = loadDrafts();
+            const v = String(text == null ? '' : text);
+            if (v) drafts[key] = v; else delete drafts[key];
+            persistDrafts();
+            emit('draft-change', { id: key, has: !!v });
+            return v;
+        }
+
+        function getDraft(id) { return loadDrafts()[String(id || '')] || ''; }
+
+        function listDrafts() { return Object.assign({}, loadDrafts()); }
+
+        function clearDraft(id) { return setDraft(id, ''); }
+
+        function clearDrafts() {
+            state.drafts = {};
+            persistDrafts();
+            emit('draft-change', { id: null, has: false });
+        }
+
+        // Наложить черновики на загруженную коллекцию; item.draft = true, если
+        // текст взят из локальной правки, а не из Gist.
+        function applyDrafts(items) {
+            const drafts = loadDrafts();
+            return (items || []).map(it => {
+                const d = drafts[it.id];
+                return d == null
+                    ? Object.assign({}, it, { draft: false })
+                    : Object.assign({}, it, { text: d, draft: true });
+            });
+        }
+
         /* ---------------- Ссылка на приложение тестирования ---------------- */
 
         // Ссылка на тест по raw-ссылке опубликованного XML (Gist или GitVerse)
@@ -847,7 +1090,7 @@
             const lp = state.lastPublish;
             if (!lp) return '';
             const raw = lp.rawUrl || lp.url || null;
-            return buildTaskUrlStatic(raw, flags, config.testAppUrl);
+            return buildTaskUrlStatic(raw, flags, config.taskApp || config.testAppUrl);
         }
 
         /* --------------------------- Токены --------------------------- */
@@ -904,16 +1147,25 @@
             scheduleAutosave,      // планирование вручную (после своих изменений)
             getLastSaveTime: () => state.lastSaveTime,
 
-            // --- Публикация ---
-            publishToGist,         // (opts?) => {target,gistId,gistUrl,rawUrl,taskUrl}
-            publishToGitverse,     // (opts?) => {target,project,branch,fileName,rawUrl,taskUrl}
-            publishToServer,       // (opts?) => {target,fileName,taskType,rawUrl,taskUrl}
+            // --- Публикация: вызовы сериализуются очередью (config.singleFlight) ---
+            publishToGist(opts2) { return publishQueued('gist', () => publishToGist(opts2)); },
+            publishToGitverse(opts2) { return publishQueued('gitverse', () => publishToGitverse(opts2)); },
+            publishToServer(opts2) { return publishQueued('server', () => publishToServer(opts2)); },
             listServerFiles,       // (opts?) => {files:[{name,size,modified,url}],url}
             resetPublishState,     // ()
-            buildTaskUrl(rawUrl, flags, baseUrl) {   // baseUrl по умолчанию — config.testAppUrl
-                return buildTaskUrlStatic(rawUrl, flags, baseUrl || config.testAppUrl);
+            buildTaskUrl(rawUrl, flags, app) {   // app: baseUrl | {baseUrl, paramName}
+                return buildTaskUrlStatic(rawUrl, flags, app || config.taskApp || config.testAppUrl);
             },
+            getTaskApp() { return normalizeTaskApp(config.taskApp || config.testAppUrl); },
             getTaskUrl,            // (flags?) => ссылка по последней публикации
+
+            // --- Коллекции и черновики ---
+            saveCollection,        // ({items, gistId?, gistFilename?}) => {gistId, gistUrl, count}
+            loadCollection,        // (ref, opts?) => {items, gist}
+            setDraft, getDraft, listDrafts, clearDraft, clearDrafts, applyDrafts,
+            getCollectionInfo() {
+                return { gistId: state.collectionGistId, gistUrl: state.collectionGistUrl, rawUrl: state.collectionRawUrl };
+            },
 
             // --- Токены ---
             setToken,              // ('github'|'gitverse'|'server', value)
@@ -957,5 +1209,8 @@
         isFsAccessSupported,
         extractGistId,
         buildTaskUrl: buildTaskUrlStatic,
+        TASK_APPS,
+        serializeCollectionMarkdown,
+        parseCollectionMarkdown,
     };
 });
