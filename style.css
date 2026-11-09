@@ -1,0 +1,342 @@
+/* ==========================================================================
+   File API — тестовая страница (стиль исходного Moodle XML Редактора)
+   ========================================================================== */
+
+*, *::before, *::after { box-sizing: border-box; }
+body, h1, h2, h3, p, div, button, input, textarea, label, a { margin: 0; padding: 0; font-family: inherit; }
+
+:root {
+    --bg: #0f172a;
+    --bg-elevated: #1e293b;
+    --bg-card: #334155;
+    --fg: #f1f5f9;
+    --fg-muted: #94a3b8;
+    --accent: #38bdf8;
+    --accent-hover: #7dd3fc;
+    --border: #475569;
+    --danger: #f87171;
+    --success: #4ade80;
+    --warning: #fbbf24;
+    --radius: 8px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background-color: var(--bg);
+    color: var(--fg);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--fg-muted); }
+
+.hidden { display: none !important; }
+.label { font-size: 0.75rem; color: var(--fg-muted); margin-bottom: 0.25rem; display: block; }
+.hint { font-size: 0.75rem; color: var(--fg-muted); margin-top: 0.5rem; }
+
+/* ===== Верхняя панель ===== */
+.topbar {
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border);
+    padding: 0.6rem 1rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    z-index: 20;
+}
+.brand { display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap; }
+.brand h1 { font-size: 1.1rem; font-weight: 700; letter-spacing: -0.5px; white-space: nowrap; }
+.toolbar { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+
+.support-badge {
+    font-size: 0.7rem;
+    padding: 2px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    color: var(--fg-muted);
+    white-space: nowrap;
+}
+.support-badge.ok { color: var(--success); border-color: var(--success); }
+.support-badge.warn { color: var(--warning); border-color: var(--warning); }
+
+/* ===== Кнопки ===== */
+.btn {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--fg);
+    padding: 0.45rem 0.8rem;
+    border-radius: var(--radius);
+    cursor: pointer;
+    font-weight: 500;
+    font-size: 0.82rem;
+    transition: background 0.15s ease, border-color 0.15s ease;
+    white-space: nowrap;
+}
+.btn:hover { background: var(--border); }
+.btn-primary { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-settings { border-color: var(--accent); color: var(--accent); background: transparent; }
+.btn-settings:hover { background: rgba(56, 189, 248, 0.15); }
+.btn-publish { border-color: var(--success); color: var(--success); background: transparent; font-weight: 600; }
+.btn-publish:hover { background: rgba(74, 222, 128, 0.15); }
+.btn-sm { padding: 0.25rem 0.5rem; font-size: 0.75rem; }
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.btn-icon {
+    background: transparent;
+    border: none;
+    color: var(--fg-muted);
+    cursor: pointer;
+    padding: 2px;
+    font-size: 0.9rem;
+    line-height: 1;
+}
+.btn-icon:hover { color: var(--danger); }
+
+/* ===== Рабочая область ===== */
+.workspace {
+    flex: 1;
+    display: flex;
+    gap: 1rem;
+    padding: 1rem;
+    overflow: auto;
+}
+.col {
+    flex: 1 1 50%;
+    min-width: 340px;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+/* ===== Карточки ===== */
+.card {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.1rem 1.25rem;
+}
+.card-full { flex: 1; display: flex; flex-direction: column; }
+.card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 1rem;
+    margin-bottom: 0.75rem;
+    flex-wrap: wrap;
+}
+.card-header h2 { font-size: 1rem; }
+
+/* ===== Поля ввода ===== */
+.input-base {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--fg);
+    padding: 0.45rem 0.7rem;
+    border-radius: var(--radius);
+    font-size: 0.85rem;
+    width: 100%;
+    outline: none;
+    transition: border-color 0.15s;
+}
+.input-base:focus { border-color: var(--accent); }
+.input-mono { font-family: 'Consolas', 'Monaco', monospace; font-size: 0.78rem; }
+.code { font-family: 'Consolas', 'Monaco', monospace; }
+
+select.input-base {
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2394a3b8'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.6rem center;
+    padding-right: 1.8rem;
+    cursor: pointer;
+}
+select.input-base option { background: var(--bg-elevated); color: var(--fg); }
+
+/* ===== Разделитель и подзаголовок внутри карточек ===== */
+.card-divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 1rem 0 0.75rem;
+}
+.sub-title {
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--fg);
+    letter-spacing: 0.2px;
+}
+
+.content-editor {
+    flex: 1;
+    width: 100%;
+    min-height: 320px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--fg);
+    font-size: 0.82rem;
+    line-height: 1.5;
+    padding: 0.75rem;
+    resize: vertical;
+    outline: none;
+}
+.content-editor:focus { border-color: var(--accent); }
+
+.subfields { margin-top: 0.75rem; display: flex; flex-direction: column; gap: 0.35rem; }
+
+/* ===== Ряды кнопок и переключатели ===== */
+.btn-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-top: 0.75rem;
+}
+.options-row { justify-content: flex-start; }
+.switch-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.78rem;
+    color: var(--fg-muted);
+    cursor: pointer;
+}
+.switch-inline input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+.switch-caption { white-space: nowrap; }
+.autosave-time { font-size: 0.7rem; color: var(--success); white-space: nowrap; }
+
+.flags-row { display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap; margin-bottom: 0.25rem; }
+
+/* ===== Индикаторы состояния ===== */
+.state-row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem; }
+.chip {
+    font-size: 0.72rem;
+    padding: 2px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    color: var(--fg-muted);
+    white-space: nowrap;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.chip-warn { color: var(--warning); border-color: var(--warning); }
+
+/* ===== Ссылка на тест ===== */
+.url-row { align-items: baseline; }
+.url-text {
+    color: var(--accent);
+    font-family: monospace;
+    font-size: 0.75rem;
+    word-break: break-all;
+    flex: 1;
+    min-width: 0;
+}
+
+/* ===== Журнал вызовов API ===== */
+.card-log { display: flex; flex-direction: column; }
+.log {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    height: 260px;
+    overflow-y: auto;
+    padding: 0.5rem;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.74rem;
+    line-height: 1.45;
+}
+.log-entry { padding: 1px 4px; border-left: 3px solid transparent; margin-bottom: 1px; word-break: break-word; }
+.log-time { color: var(--fg-muted); margin-right: 6px; }
+.log-kind { font-weight: 700; font-size: 0.66rem; margin-right: 6px; letter-spacing: 0.5px; }
+.log-call .log-kind { color: var(--accent); }
+.log-ok .log-kind { color: var(--success); }
+.log-ok { border-left-color: var(--success); }
+.log-err .log-kind { color: var(--danger); }
+.log-err { border-left-color: var(--danger); background: rgba(248, 113, 113, 0.07); }
+.log-evt .log-kind { color: #a78bfa; }
+.log-info { color: var(--fg-muted); }
+
+/* ===== Статусная строка ===== */
+.status-bar {
+    background: var(--bg-elevated);
+    padding: 0.4rem 1rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.78rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    min-height: 34px;
+}
+.status-item { display: flex; align-items: center; gap: 0.5rem; color: var(--fg-muted); }
+.status-meta { font-style: italic; white-space: nowrap; }
+
+/* ===== Модальные окна ===== */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+}
+.modal-overlay.show { opacity: 1; pointer-events: all; }
+.modal {
+    background: var(--bg-elevated);
+    padding: 1.5rem;
+    border-radius: var(--radius);
+    width: 90%;
+    max-width: 460px;
+    border: 1px solid var(--border);
+    transform: scale(0.95);
+    transition: transform 0.2s;
+    max-height: 85vh;
+    overflow-y: auto;
+}
+.modal-overlay.show .modal { transform: scale(1); }
+.modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+.modal-header h3 { font-size: 1.1rem; font-weight: 700; }
+.modal-body { display: flex; flex-direction: column; gap: 1rem; }
+.modal-footer { display: flex; justify-content: flex-end; margin-top: 1.25rem; }
+.token-row { display: flex; flex-direction: column; gap: 0.25rem; }
+
+/* ===== Toast ===== */
+.toast {
+    position: fixed;
+    bottom: 48px;
+    right: 20px;
+    padding: 12px 20px;
+    background: var(--bg-card);
+    border-left: 4px solid var(--accent);
+    color: var(--fg);
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    transform: translateY(100px);
+    opacity: 0;
+    transition: all 0.3s ease;
+    z-index: 1000;
+    max-width: 40vw;
+}
+.toast.show { transform: translateY(0); opacity: 1; }
+.toast.error { border-color: var(--danger); }
+
+/* ===== Адаптивность ===== */
+@media (max-width: 1100px) {
+    .workspace { flex-direction: column; }
+    .col { min-width: 0; }
+    .content-editor { min-height: 220px; }
+    .toast { max-width: 80vw; }
+}

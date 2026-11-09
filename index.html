@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File API — тестовая страница</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <!-- ===== Верхняя панель ===== -->
+    <header class="topbar">
+        <div class="brand">
+            <h1>📄 File API — тестовая страница</h1>
+            <span class="support-badge" id="fsSupport"></span>
+        </div>
+        <nav class="toolbar">
+            <button type="button" class="btn" id="btnClearLog" title="Очистить журнал вызовов API">🧹 Очистить журнал</button>
+            <button type="button" class="btn btn-settings" id="btnSettings" title="Токены сервисов и настройки сервера публикации">⚙ Настройки</button>
+        </nav>
+    </header>
+
+    <!-- ===== Рабочая область: содержимое слева, тесты API справа ===== -->
+    <main class="workspace">
+        <section class="col">
+            <div class="card card-full">
+                <div class="card-header">
+                    <h2>Содержимое файла (Moodle XML)</h2>
+                    <span class="hint" id="contentMeta"></span>
+                </div>
+                <textarea id="contentEditor" class="content-editor code" spellcheck="false"
+                    placeholder="XML-содержимое задания. Нажмите «📄 Загрузить пример», чтобы начать."></textarea>
+                <div class="btn-row">
+                    <button type="button" class="btn" id="btnSample" title="Заполнить поле примером Moodle XML">📄 Загрузить пример</button>
+                    <button type="button" class="btn" id="btnLoadFile" title="api.loadFromFile() — открыть XML-файл с диска">📂 Загрузить из файла</button>
+                    <button type="button" class="btn btn-primary" id="btnSaveFile" title="api.saveToFile() — сохранить XML в файл на диске">💾 Сохранить в файл</button>
+                    <button type="button" class="btn" id="btnCopyContent" title="Скопировать содержимое в буфер обмена">📋 Копировать</button>
+                </div>
+                <div class="btn-row options-row">
+                    <label class="switch-inline" title="api.setAutosave() — запись в выбранный файл через 1,5 с после изменений">
+                        <input type="checkbox" id="autosaveToggle">
+                        <span class="switch-caption">Автосохранение на диск</span>
+                    </label>
+                    <span class="autosave-time" id="lastSaveTime"></span>
+                </div>
+                <div class="state-row">
+                    <span class="chip" id="stateFile">файл: —</span>
+                    <span class="chip chip-warn hidden" id="stateDirty">⚠ есть несохранённые изменения</span>
+                    <span class="chip chip-warn hidden" id="stateStale">⚠ опубликованный вариант устарел — нужна повторная публикация</span>
+                </div>
+            </div>
+        </section>
+
+        <section class="col">
+            <!-- Загрузка из Gist -->
+            <div class="card">
+                <div class="card-header"><h2>☁ Загрузка из GitHub Gist</h2></div>
+                <label class="label" for="gistRef">Ссылка на Gist, raw-ссылка или ID</label>
+                <input type="text" id="gistRef" class="input-base input-mono" placeholder="https://gist.github.com/user/abc123…">
+                <div class="btn-row">
+                    <button type="button" class="btn btn-primary" id="btnLoadGist" title="api.loadFromGist()">☁ Загрузить из Gist</button>
+                </div>
+                <p class="hint">Приватные Gist требуют GitHub Token (⚙ Настройки). Публичные загружаются без токена.</p>
+            </div>
+
+            <!-- Публикация -->
+            <div class="card">
+                <div class="card-header">
+                    <h2>🚀 Публикация</h2>
+                    <span class="hint" id="publishInfo">ещё не публиковалось</span>
+                </div>
+                <label class="label" for="publishDescription">Описание (название теста → описание Gist / commit)</label>
+                <input type="text" id="publishDescription" class="input-base" placeholder="Название теста">
+                <div class="btn-row">
+                    <button type="button" class="btn btn-publish" id="btnPublishGist" title="api.publishToGist()">🚀 GitHub Gist</button>
+                    <button type="button" class="btn" id="btnResetPublish" title="api.resetPublishState() — следующая публикация создаст новый Gist/файл">✂ Сбросить привязку</button>
+                </div>
+                <div class="subfields">
+                    <label class="label" for="gvRepo">GitVerse: репозиторий (пусто — выбрать автоматически)</label>
+                    <input type="text" id="gvRepo" class="input-base input-mono" placeholder="user/repo">
+                    <label class="label" for="gvFileName">GitVerse: имя файла в репозитории</label>
+                    <input type="text" id="gvFileName" class="input-base input-mono" placeholder="quiz.xml">
+                </div>
+                <div class="btn-row">
+                    <button type="button" class="btn btn-publish" id="btnPublishGitverse" title="api.publishToGitverse()">🚀 GitVerse</button>
+                </div>
+                <hr class="card-divider">
+                <div class="subfields">
+                    <span class="sub-title">На сервер tregubovvn.ru (папка Task_Arhive)</span>
+                    <label class="label" for="serverTaskType">Тип задания — префикс имени файла
+                        (<span class="input-mono">&lt;Тип&gt;_&lt;10 цифр&gt;.xml</span>, число генерируется само)</label>
+                    <select id="serverTaskType" class="input-base" title="api.publishToServer({taskType})">
+                        <option value="ReadTest">ReadTest</option>
+                        <option value="MoodleTest">MoodleTest</option>
+                        <option value="FormulaTest">FormulaTest</option>
+                    </select>
+                    <label class="label" for="serverDescription">Описание (необязательно)</label>
+                    <input type="text" id="serverDescription" class="input-base" placeholder="Название теста (можно оставить пустым)">
+                </div>
+                <div class="btn-row">
+                    <button type="button" class="btn btn-publish" id="btnPublishServer" title="api.publishToServer() — отправить XML на сервер по паролю">🚀 На сервер</button>
+                    <button type="button" class="btn" id="btnListServer" title="api.listServerFiles() — список файлов в папке архива">📄 Файлы на сервере</button>
+                </div>
+                <p class="hint">Пароль публикации задаётся в ⚙ Настройки → «Пароль сервера». Файл появится по адресу tregubovvn.ru/Task_Arhive/&lt;имя&gt;.xml.</p>
+            </div>
+
+            <!-- Ссылка на тест -->
+            <div class="card">
+                <div class="card-header"><h2>🔗 Ссылка на тест (приложение mt_v2)</h2></div>
+                <div class="flags-row">
+                    <label class="switch-inline" title="checkmode=true — кнопка «Проверить ответ» на каждом вопросе"><input type="checkbox" id="flCheckMode"><span class="switch-caption">CheckMode</span></label>
+                    <label class="switch-inline" title="headershow=true — показывать шапку теста"><input type="checkbox" id="flShowHeader"><span class="switch-caption">ShowHeader</span></label>
+                    <label class="switch-inline" title="crushmode=true — режим дробления"><input type="checkbox" id="flCrushMode"><span class="switch-caption">CrushMode</span></label>
+                    <label class="switch-inline" title="randommode=true — случайный порядок вопросов"><input type="checkbox" id="flRandomMode"><span class="switch-caption">RandomMode</span></label>
+                </div>
+                <div class="btn-row url-row">
+                    <a id="taskUrl" class="url-text" href="#" target="_blank" rel="noopener">— ещё не публиковалось —</a>
+                    <button type="button" class="btn btn-sm" id="btnCopyTaskUrl" title="Скопировать ссылку">📋</button>
+                </div>
+                <p class="hint">api.getTaskUrl(flags) — собирается из raw-ссылки последней публикации (Gist или GitVerse).</p>
+            </div>
+
+            <!-- Журнал -->
+            <div class="card card-log">
+                <div class="card-header">
+                    <h2>📜 Журнал вызовов API</h2>
+                    <span class="hint">каждая кнопка вызывает метод библиотеки</span>
+                </div>
+                <div id="log" class="log" aria-live="polite"></div>
+            </div>
+        </section>
+    </main>
+
+    <!-- ===== Статусная строка ===== -->
+    <footer class="status-bar">
+        <div class="status-item" id="statusText">Готово</div>
+        <div class="status-item status-meta" id="statusMeta"></div>
+    </footer>
+
+    <!-- ===== Модальное окно: токены ===== -->
+    <div class="modal-overlay" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 id="settingsTitle">Настройки</h3>
+                <button type="button" class="btn-icon" id="btnSettingsClose" aria-label="Закрыть">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="token-row">
+                    <label class="label" for="githubToken">GitHub Token (Gist: загрузка приватных и публикация)</label>
+                    <input type="password" id="githubToken" class="input-base input-mono" placeholder="ghp_…" autocomplete="off">
+                </div>
+                <div class="token-row">
+                    <label class="label" for="gitverseToken">GitVerse Token (публикация в репозиторий)</label>
+                    <input type="password" id="gitverseToken" class="input-base input-mono" placeholder="токен доступа GitVerse" autocomplete="off">
+                </div>
+                <hr class="card-divider">
+                <div class="token-row">
+                    <span class="sub-title">Публикация на сервере (tregubovvn.ru)</span>
+                    <label class="label" for="serverPassword">Пароль публикации (должен совпадать с паролем в publish.php на сервере)</label>
+                    <input type="password" id="serverPassword" class="input-base input-mono" placeholder="пароль публикации" autocomplete="off">
+                </div>
+                <div class="token-row">
+                    <label class="label" for="serverEndpoint">Адрес эндпоинта публикации (publish.php)</label>
+                    <input type="text" id="serverEndpoint" class="input-base input-mono" placeholder="https://tregubovvn.ru/publish.php">
+                </div>
+                <div class="token-row">
+                    <label class="label" for="serverFolder">Папка архива на сервере</label>
+                    <input type="text" id="serverFolder" class="input-base input-mono" placeholder="Task_Arhive">
+                </div>
+                <p class="hint">Пароль хранится через api.setToken('server', …) только в localStorage вашего браузера. Адрес и папка — в настройках этой страницы.</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" id="btnSettingsDone">Готово</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <script src="file-api.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
