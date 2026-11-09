@@ -7,17 +7,20 @@
 |---|---|
 | **Загрузка** | файл с диска (File System Access API + fallback `<input type=file>`), GitHub Gist (ссылка / raw / ID) |
 | **Сохранение** | запись в выбранный файл без повторных диалогов, диалог «Сохранить как», скачивание (Firefox/Safari), автосохранение с задержкой |
-| **Публикация** | GitHub Gist (создание/обновление приватного Gist), GitVerse (коммит XML в репозиторий), собственный сервер (tregubovvn.ru — папка Task_Arhive по паролю, имя файла `<Тип>_<10 цифр>.xml`), сборка ссылки на приложение тестирования (mt_v2) |
+| **Публикация** | GitHub Gist (создание/обновление приватного Gist), GitVerse (коммит XML в репозиторий), собственный сервер (tregubovvn.ru — папка Task_Arhive по паролю, имя файла `<Тип>_<10 цифр>.xml`), сборка ссылки на приложение тестирования (mt_v2 / rt_v2) |
+| **Коллекции** | несколько именованных текстов в одном Gist + локальные черновики поверх загруженного |
 
 Библиотека **не зависит от UI редактора**: содержимое — произвольный текст (обычно Moodle XML), интерфейс отдаётся вызывающему приложению через методы и события.
 
 ```
 moodle-file-api/
 ├── file-api.js            — библиотека (единственный файл, без зависимостей)
+├── results-api.js         — сохранение результатов теста (Student Tracker)
 ├── index.html             — тестовая страница (проверка всех возможностей)
 ├── app.js                 — код тестовой страницы (пример интеграции)
 ├── style.css              — стили тестовой страницы
 ├── README.md
+├── tests/                 — тесты: node tests/run.js, node tests/results.test.js
 └── server/                — серверная часть публикации на свой сайт
     ├── publish.php        — PHP-эндпоинт приёма файлов (загрузить на хостинг)
     ├── htaccess.txt       — положить в папку архива под именем .htaccess
@@ -104,17 +107,29 @@ try {
 | `publishToServer(opts?)` | **Публикация на свой сервер** (tregubovvn.ru). `{taskType?, password?, endpoint?, folder?, fileName?, description?}`. Имя файла генерируется само: `<Тип>_<10 случайных цифр>.xml`, где `Тип` — один из `ReadTest`, `MoodleTest`, `FormulaTest`. Пароль — `api.setToken('server', …)`. Возвращает `{target:'server', fileName, taskType, rawUrl, taskUrl, updated}` |
 | `listServerFiles(opts?)` | Список файлов в папке архива на сервере: `{password?, endpoint?, folder?}` → `{files:[{name, size, modified, url}], url}` |
 | `resetPublishState()` | Отвязать Gist/файл — следующая публикация создаст новый |
-| `getTaskUrl(flags?)` | Ссылка на тест в приложении mt_v2 по raw-ссылке последней публикации |
-| `buildTaskUrl(rawUrl, flags, baseUrl?)` | То же из произвольной raw-ссылки. Флаги: `{checkmode, headershow, crushmode, randommode}` (в URL попадают только включённые: `&checkmode=true`…) |
+| `getTaskUrl(flags?)` | Ссылка на тест по raw-ссылке последней публикации — приложение задаётся `taskApp` |
+| `buildTaskUrl(rawUrl, flags, app?)` | То же из произвольной raw-ссылки. `app` — `baseUrl` или `{baseUrl, paramName}`. Флаги: `{checkmode, headershow, crushmode, randommode}` (в URL попадают только включённые: `&checkmode=true`…) |
 | `getLastPublish()` | Информация о последней публикации |
 
-Формат ссылки на тест (согласован с приложением mt_v2):
+Вызовы `publishToGist` / `publishToGitverse` / `publishToServer` сериализуются: пока запрос выполняется, следующий ждёт, а несколько нажатий подряд схлопываются в один повторный запуск с актуальным содержимым. Отключается через `singleFlight: false`.
+
+Приложения тестирования читают ссылку из разных параметров: **mt_v2** — `?name=`, **rt_v2** — `?file=`. Готовые пресеты — `FilesApi.TASK_APPS`:
+
+```js
+const api = FilesApi.create({ taskApp: FilesApi.TASK_APPS.rt_v2 });
+// https://tregubovvn.github.io/rt_v2/index.html?file=<rawUrl>&checkmode=true
+
+const api2 = FilesApi.create({ taskApp: FilesApi.TASK_APPS.mt_v2 });
+// https://tregubovvn.github.io/mt_v2/index.html?name=<rawUrl>&checkmode=true
+```
+
+`testAppUrl` (строка) остаётся для обратной совместимости и означает `?name=<rawUrl>`.
+
+Формат ссылки для mt_v2:
 
 ```
 https://tregubovvn.github.io/mt_v2/index.html?name=<encodeURIComponent(rawUrl)>&checkmode=true&…
 ```
-
-`testAppUrl` можно заменить в `FilesApi.create({ testAppUrl: '…' })` — тогда `taskUrl` будет вести в ваше приложение.
 
 ### Публикация на свой сервер (tregubovvn.ru)
 
@@ -142,6 +157,31 @@ const list = await api.listServerFiles();   // что уже опубликов�
 Пошаговая настройка сервера (загрузка `publish.php`, пароль, права папки,
 HTTPS, проверка через curl, типичные ошибки) — в файле
 **[server/README-server.md](server/README-server.md)**.
+
+### Коллекции и черновики
+
+Несколько именованных текстов в одном Gist — например, библиотека промптов. Формат по умолчанию: секции Markdown `## Название` и текст до следующей секции.
+
+| Метод | Описание |
+|---|---|
+| `saveCollection({items, gistId?, gistFilename?})` | Записать коллекцию в Gist: создать новый или обновить существующий. `items` — `[{id?, name, text}]`. Возвращает `{gistId, gistUrl, rawUrl, fileName, count}` |
+| `loadCollection(ref, opts?)` | Прочитать коллекцию по ссылке/ID Gist → `{items, gist}`. `opts.parse` — своя функция разбора |
+| `setDraft(id, text)` / `getDraft(id)` | Локальная правка поверх загруженного (localStorage), без записи в Gist |
+| `listDrafts()` / `clearDraft(id)` / `clearDrafts()` | Просмотр и очистка черновиков |
+| `applyDrafts(items)` | Наложить черновики на массив: у изменённых элементов `draft: true` |
+| `getCollectionInfo()` | `{gistId, gistUrl, rawUrl}` последней коллекции |
+
+События: `collection-save`, `collection-load`, `draft-change`.
+
+```js
+const r = await api.saveCollection({
+    items: [{ id: 'strict', name: 'Строгий', text: 'Ты — строгий экзаменатор…' }],
+    gistFilename: 'prompts.md',
+});
+
+const { items } = await api.loadCollection(r.gistUrl);
+const merged = api.applyDrafts(items);       // локальные правки сверху
+```
 
 ### Токены
 
@@ -216,6 +256,42 @@ const api = FilesApi.create({
 
 ---
 
+## Сохранение результатов (results-api.js)
+
+Отдельный модуль для записи результатов теста во внешнюю базу (Student Tracker). Выделен из `rt_v2` (`public/api.js` → `StudentAPI`) и `mt_v2` (встроенный клиент Supabase в `app.js`).
+
+```html
+<script src="results-api.js"></script>
+<script>
+    const results = ResultsApi.create({
+        endpoint: 'https://<project>.supabase.co',
+        apiKey: '<anon key>',
+        table: 'records',
+        minIntervalMs: 10 * 60 * 1000,   // ограничение частоты на студента
+    });
+
+    results.setStudentId('123456');      // запоминается в localStorage
+    await results.save({
+        studentId: '123456',
+        activity: 'RE:AD — тест',
+        grade: 5,
+        comment: 'ФИО: …; Время: 12:34; Ошибок: 2',
+    });
+</script>
+```
+
+| Метод | Описание |
+|---|---|
+| `save({studentId, activity, grade, comment?, dateTime?}, opts?)` | Проверить поля, проверить частоту (`opts.checkInterval: false` — пропустить), отправить запись. Возвращает `{success, record}` |
+| `list(studentId, {limit?, select?})` | Записи студента, свежие первыми |
+| `rateLimitStatus(studentId)` | `{limited, waitMs}` — сколько ждать до следующей записи |
+| `setStudentId` / `getStudentId` / `hasStudentId` | ИД студента в localStorage |
+| `on('result-saved' \| 'student-id-change')` | События |
+
+Коды ошибок: `ENDPOINT_REQUIRED`, `STUDENT_ID_REQUIRED`, `ACTIVITY_REQUIRED`, `GRADE_REQUIRED`, `RATE_LIMIT`, `HTTP`, `NETWORK`.
+
+Ограничение частоты дублируется на клиенте для понятного сообщения, но защитой не является: anon-ключ публичен, поэтому запрет должен быть на стороне базы (RLS и триггер в Supabase).
+
 ## Тестовая страница
 
 Проверяет все возможности через публичное API (каждая кнопка журналирует вызов, результат и ошибки — см. «Журнал вызовов API»):
@@ -252,10 +328,14 @@ python3 -m http.server 8080
 
 ```bash
 node tests/run.js
+node tests/results.test.js
 ```
 
-`tests/run.js` — характеризационные тесты публичного API без зависимостей:
+`tests/run.js` — характеризационные тесты `file-api.js` без зависимостей:
 подменяют `fetch` и проверяют разбор ссылок Gist, сборку ссылки на тест,
-работу с токенами, публикацию (Gist, GitVerse, свой сервер), список файлов
-и коды ошибок. Тесты фиксируют текущее поведение библиотеки: внутренние
-изменения не должны их ломать.
+работу с токенами, публикацию (Gist, GitVerse, свой сервер), список файлов,
+коллекции и черновики, очередь публикаций и коды ошибок. Тесты фиксируют
+текущее поведение библиотеки: внутренние изменения не должны их ломать.
+
+`tests/results.test.js` — тесты `results-api.js`: валидация полей, ограничение
+частоты, коды ошибок и сохранение ИД студента.

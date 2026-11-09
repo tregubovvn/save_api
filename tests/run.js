@@ -445,6 +445,174 @@ function bodyOf(call) {
         eq(a.getTaskUrl({ checkmode: true }), '');
     });
 
+    /* ---------- Диалекты ссылки на приложение тестирования ---------- */
+
+    await test('buildTaskUrl: rt_v2 читает ?file= (объект taskApp)', () => {
+        const url = FilesApi.buildTaskUrl('https://x/raw.xml', { checkmode: true }, FilesApi.TASK_APPS.rt_v2);
+        eq(url, 'https://tregubovvn.github.io/rt_v2/index.html?file=' +
+            encodeURIComponent('https://x/raw.xml') + '&checkmode=true');
+    });
+
+    await test('buildTaskUrl: строка как baseUrl — обратная совместимость (?name=)', () => {
+        const url = FilesApi.buildTaskUrl('https://x/raw.xml', {}, 'https://app/');
+        eq(url.indexOf('?name=') > 0, true);
+    });
+
+    await test('getTaskApp: taskApp из конфига важнее testAppUrl', () => {
+        const a = FilesApi.create({ taskApp: FilesApi.TASK_APPS.rt_v2 });
+        eq(a.getTaskApp().paramName, 'file');
+        const b = FilesApi.create();
+        eq(b.getTaskApp().paramName, 'name');
+    });
+
+    await test('getTaskUrl: после публикации ссылка собирается с ?file= для rt_v2', async () => {
+        resetFetch();
+        route('/gists', () => jsonResponse(201, {
+            id: 'rt1', html_url: 'https://gist.github.com/u/rt1',
+            files: { 'quiz.xml': { raw_url: 'https://x/rt1.xml' } },
+        }));
+        const a = FilesApi.create({ taskApp: FilesApi.TASK_APPS.rt_v2 });
+        a.setToken('github', 't');
+        a.setContent('<quiz/>');
+        await a.publishToGist();
+        const url = a.getTaskUrl();
+        eq(url.indexOf('?file=') > 0, true);
+        eq(url.indexOf('?name='), -1);
+    });
+
+    /* ---------- Коллекции ---------- */
+
+    await test('parseCollectionMarkdown: секции, id и повторы', () => {
+        const md = '## Alpha\n\none\n\n## Тест\n\nдва\n\n## Alpha\n\nthree\n';
+        const items = FilesApi.parseCollectionMarkdown(md);
+        eq(items.length, 3);
+        eq(items[0], { id: 'alpha', name: 'Alpha', text: 'one' });
+        eq(items[1].id, 'тест');
+        eq(items[1].text, 'два');
+        eq(items[2].id, 'alpha-2');
+    });
+
+    await test('serializeCollectionMarkdown: round-trip', () => {
+        const src = [{ id: 'a', name: 'Alpha', text: 'one\n\ntwo' }];
+        const items = FilesApi.parseCollectionMarkdown(FilesApi.serializeCollectionMarkdown(src));
+        eq(items.length, 1);
+        eq(items[0].text, 'one\n\ntwo');
+    });
+
+    await test('saveCollection: создаёт Gist с MD-секциями', async () => {
+        resetFetch();
+        route('/gists', () => jsonResponse(201, {
+            id: 'col1', html_url: 'https://gist.github.com/u/col1',
+            files: { 'collection.md': { raw_url: 'https://x/col1.md' } },
+        }));
+        const a = FilesApi.create();
+        a.setToken('github', 't');
+        const r = await a.saveCollection({
+            items: [{ id: 'a', name: 'Alpha', text: 'one' }, { id: 'b', name: 'Beta', text: 'two' }],
+        });
+        eq(r.count, 2);
+        eq(r.gistId, 'col1');
+        const body = bodyOf(calls[0]);
+        eq(body.public, false);
+        eq(body.files['collection.md'].content.includes('## Alpha'), true);
+        eq(body.files['collection.md'].content.includes('two'), true);
+    });
+
+    await test('saveCollection: обновляет Gist и убирает старый .md', async () => {
+        resetFetch();
+        route('/gists/col1', (call) => {
+            if (!call.opts.method || call.opts.method === 'GET') {
+                return jsonResponse(200, { id: 'col1', files: { 'old.md': { content: '## Old\n\ntext' } } });
+            }
+            return jsonResponse(200, {
+                id: 'col1', html_url: 'https://gist.github.com/u/col1',
+                files: { 'collection.md': { raw_url: 'https://x/col1.md' } },
+            });
+        });
+        const a = FilesApi.create();
+        a.setToken('github', 't');
+        const r = await a.saveCollection({ gistId: 'col1', items: [{ name: 'Alpha', text: 'one' }] });
+        eq(r.fileName, 'collection.md');
+        const patch = calls[1];
+        eq(patch.opts.method, 'PATCH');
+        eq(bodyOf(patch).files['old.md'], null);
+    });
+
+    await test('saveCollection: пустая коллекция → EMPTY', async () => {
+        const a = FilesApi.create();
+        a.setToken('github', 't');
+        await assert.rejects(() => a.saveCollection({ items: [] }), e => e.code === 'EMPTY');
+    });
+
+    await test('loadCollection: разбирает файл и запоминает Gist', async () => {
+        resetFetch();
+        route('/gists/c01d2ab', () => jsonResponse(200, {
+            id: 'c01d2ab', html_url: 'https://gist.github.com/u/c01d2ab', description: 'Промпты',
+            files: { 'collection.md': { content: '## Alpha\n\none\n\n## Beta\n\ntwo', raw_url: 'https://x/c01d2ab.md' } },
+        }));
+        const a = FilesApi.create();
+        const r = await a.loadCollection('https://gist.github.com/u/c01d2ab');
+        eq(r.items.length, 2);
+        eq(r.items[1].name, 'Beta');
+        eq(r.gist.gistId, 'c01d2ab');
+        eq(a.getCollectionInfo().gistUrl, 'https://gist.github.com/u/c01d2ab');
+    });
+
+    /* ---------- Черновики ---------- */
+
+    await test('черновики: set/get/list/clear и наложение', () => {
+        const a = FilesApi.create({ storagePrefix: 'draftTest' });
+        eq(a.getDraft('alpha'), '');
+        a.setDraft('alpha', 'локальная правка');
+        eq(a.getDraft('alpha'), 'локальная правка');
+        eq(a.listDrafts(), { alpha: 'локальная правка' });
+
+        const applied = a.applyDrafts([
+            { id: 'alpha', name: 'Alpha', text: 'из Gist' },
+            { id: 'beta', name: 'Beta', text: 'beta' },
+        ]);
+        eq(applied[0].text, 'локальная правка');
+        eq(applied[0].draft, true);
+        eq(applied[1].draft, false);
+
+        a.clearDraft('alpha');
+        eq(a.getDraft('alpha'), '');
+        a.setDraft('beta', 'x');
+        a.clearDrafts();
+        eq(a.listDrafts(), {});
+    });
+
+    /* ---------- Очередь публикаций ---------- */
+
+    await test('очередь: три параллельных publishToGist → два запроса', async () => {
+        resetFetch();
+        route('/gists', () => jsonResponse(201, {
+            id: 'q1', html_url: 'https://gist.github.com/u/q1',
+            files: { 'quiz.xml': { raw_url: 'https://x/q1.xml' } },
+        }));
+        const a = FilesApi.create();
+        a.setToken('github', 't');
+        a.setContent('<quiz/>');
+        const [r1, r2, r3] = await Promise.all([
+            a.publishToGist(), a.publishToGist(), a.publishToGist(),
+        ]);
+        eq(calls.length, 2);
+        eq([r1, r2, r3].every(r => r && r.gistId === 'q1'), true);
+    });
+
+    await test('очередь: singleFlight:false — три запроса', async () => {
+        resetFetch();
+        route('/gists', () => jsonResponse(201, {
+            id: 'q2', html_url: 'https://gist.github.com/u/q2',
+            files: { 'quiz.xml': { raw_url: 'https://x/q2.xml' } },
+        }));
+        const a = FilesApi.create({ singleFlight: false });
+        a.setToken('github', 't');
+        a.setContent('<quiz/>');
+        await Promise.all([a.publishToGist(), a.publishToGist(), a.publishToGist()]);
+        eq(calls.length, 3);
+    });
+
     /* ---------- Итог ---------- */
 
     console.log('\nИтого: ' + results.passed + ' passed, ' + results.failed + ' failed\n');
