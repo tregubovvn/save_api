@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prompts API — режимы редактора</title>
+    <style>
+        :root { color-scheme: light; }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0; min-height: 100vh; padding: 40px 20px;
+            background: radial-gradient(1200px 600px at 15% -10%, #e0e7ff 0%, transparent 60%),
+                        radial-gradient(900px 500px at 100% 0%, #fae8ff 0%, transparent 55%), #f8fafc;
+            color: #0f172a;
+            font: 15px/1.55 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
+        .wrap { max-width: 900px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
+        .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 16px; padding: 22px 24px; box-shadow: 0 12px 40px rgba(15,23,42,.06); }
+        h1 { margin: 0 0 6px; font-size: 24px; letter-spacing: -.01em; }
+        .sub { margin: 0; color: #64748b; font-size: 13.5px; }
+        .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; background: #eef2ff; color: #3730a3; font-size: 12.5px; font-weight: 600; }
+        .chip .dot { width: 7px; height: 7px; border-radius: 50%; background: #4f46e5; }
+        button {
+            height: 40px; padding: 0 16px; border: 1px solid #cbd5e1; border-radius: 10px; background: #fff;
+            color: #1e293b; font: inherit; font-size: 13.5px; font-weight: 500; cursor: pointer;
+        }
+        button:hover { background: #f8fafc; }
+        button.primary { background: #4f46e5; border-color: #4f46e5; color: #fff; }
+        button.primary:hover { background: #4338ca; }
+        .meta { color: #64748b; font-size: 12.5px; }
+        pre { margin: 0; max-height: 320px; overflow: auto; padding: 14px 16px; border: 1px solid #e2e8f0; border-radius: 12px; background: #f8fafc; color: #334155;
+              font: 12.5px/1.55 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; white-space: pre-wrap; word-break: break-word; }
+        ol { margin: 10px 0 0; padding-left: 20px; color: #475569; font-size: 13px; }
+        ol li { margin: 4px 0; }
+        code { background: #f1f5f9; padding: 1px 5px; border-radius: 5px; font-size: 12.5px; }
+        .log { font: 12px/1.6 ui-monospace, Consolas, monospace; color: #475569; max-height: 180px; overflow: auto; }
+        .log div { border-bottom: 1px dashed #e2e8f0; padding: 2px 0; }
+    </style>
+</head>
+<body>
+<div class="wrap">
+
+    <div class="card">
+        <h1>Prompts API — режимы редактора</h1>
+        <p class="sub">Выбор промпта переключает режим работы редактора. Окно режимов: выпадающий список,
+            просмотр промпта выбранного режима, добавление своих режимов и сохранение всех режимов в один Gist.</p>
+    </div>
+
+    <div class="card">
+        <div class="row" style="justify-content: space-between;">
+            <div class="row">
+                <span class="chip"><span class="dot"></span><span id="modeName">режим не выбран</span></span>
+                <span class="meta" id="modeMeta"></span>
+            </div>
+            <button type="button" class="primary" id="btnOpen">Открыть окно режимов</button>
+        </div>
+        <div class="row" style="margin: 14px 0 8px;">
+            <span class="meta">Промпт активного режима — именно он уходит в модель:</span>
+        </div>
+        <pre id="activePrompt">—</pre>
+    </div>
+
+    <div class="card">
+        <h2 style="margin: 0 0 4px; font-size: 15px;">Как это работает</h2>
+        <ol>
+            <li>Режим = промпт. Название режима — заголовок первого уровня (<code># Название</code>) в тексте промпта.</li>
+            <li>Два базовых режима доступны всегда: их текст берётся из их собственных публичных Gist'ов.</li>
+            <li>Без GitHub Token доступны только эти два режима; свои режимы хранятся в одном Gist и требуют токен.</li>
+            <li>«Применить режим» переключает редактор, «Изменить» правит промпт, «Сохранить в Gist» записывает все режимы в один файл.</li>
+        </ol>
+    </div>
+
+    <div class="card">
+        <div class="row" style="justify-content: space-between; margin-bottom: 8px;">
+            <strong style="font-size: 13px;">Журнал</strong>
+            <button type="button" id="btnClear" style="height: 30px; padding: 0 10px; font-size: 12px;">Очистить</button>
+        </div>
+        <div class="log" id="log"></div>
+    </div>
+
+</div>
+
+<script src="prompts-api.js"></script>
+<script>
+    const logBox = document.getElementById('log');
+    function log(message) {
+        const row = document.createElement('div');
+        row.textContent = new Date().toLocaleTimeString() + '  ' + message;
+        logBox.prepend(row);
+    }
+
+    const prompts = PromptsApi.create({
+        preset: 'rt_v2',
+        storagePrefix: 'promptsApiDemo',
+        dialogTitle: 'Режим работы редактора RE:AD',
+    });
+
+    function renderActive() {
+        const prompt = prompts.getActivePrompt();
+        document.getElementById('modeName').textContent = prompt ? prompt.name : 'режим не выбран';
+        document.getElementById('modeMeta').textContent = prompt
+            ? (prompt.builtin ? 'базовый режим' : 'из Gist') + ' · ' + prompt.chars + ' символов'
+            : '';
+        document.getElementById('activePrompt').textContent = prompt && prompt.text
+            ? prompt.text
+            : '— промпт пуст: нет сети/кэша или режим без текста —';
+    }
+
+    prompts.on('mode-change', mode => {
+        renderActive();
+        log('режим переключён: ' + mode.name);
+    });
+    prompts.on('load', e => log('загружено режимов: ' + e.modes.length + (e.errors.length ? ' · замечаний: ' + e.errors.length : '')));
+    prompts.on('save', e => log('сохранено в Gist: ' + e.gistUrl + ' (' + e.count + ' режимов)'));
+    prompts.on('status', e => log((e.error ? '! ' : '') + e.message));
+    prompts.on('token-change', e => log('токен: ' + (e.has ? 'задан' : 'удалён')));
+
+    document.getElementById('btnOpen').addEventListener('click', () => prompts.openDialog());
+    document.getElementById('btnClear').addEventListener('click', () => { logBox.innerHTML = ''; });
+
+    prompts.load().then(renderActive).catch(e => log('ошибка загрузки: ' + e.message));
+</script>
+</body>
+</html>
