@@ -261,45 +261,41 @@ const api = FilesApi.create({
 
 ## Промпты и режимы (prompts-api.js)
 
-Выделено из двух редакторов: **rt_v2** (`editor/app.js`, промпты DeepSeek для RE:AD)
-и **mt_v2** (`editor/app.js`, промпты Moodle XML). В обоих жил один и тот же код
-(загрузка промптов, разбор Markdown, добавление своих режимов, сохранение в Gist)
-с разными константами. Теперь он один — `prompts-api.js`.
+Единое хранилище промптов для всех редакторов (**rt** — Reading Test, **mt** — Moodle Quiz,
+**ft** — Formula Test): один публичный GitHub Gist, один файл `prompts.xml`, в котором
+лежат все режимы. Библиотека читает файл без токена, а редактирует — с GitHub Token.
 
 ### Модель
 
 - **Режим = промпт.** Выбор промпта переключает режим работы редактора: приложение
   берёт текст через `getActivePrompt()` / `getPromptText()` и слушает `mode-change`.
-- **Название режима — заголовок первого уровня** (`# Название`) в тексте промпта.
-  Отдельного поля «название режима» нет: как промпт озаглавлен, так режим и называется.
-- **Два базовых режима есть всегда** — их состав задаётся пресетом (`preset: 'rt_v2'`
-  или `'mt_v2'`). Текст берётся из их собственных публичных Gist'ов и кэшируется
-  в `localStorage`; без сети используется кэш.
-- **Все режимы хранятся в одном Gist** (файл `prompts.md`). Пользователь добавляет
-  свои режимы, правит их и сохраняет всё обратно в тот же Gist.
-- **Без GitHub Token общий Gist недоступен** — работают только два базовых режима.
-  «Добавить режим» и «Сохранить в Gist» без токена возвращают `TOKEN_REQUIRED`.
+- **У каждого промпта три поля**: название режима (`name`), вид теста (`type`:
+  `rt` | `mt` | `ft`) и Markdown-текст. Редактор видит промпты своего вида теста.
+- **Чтение — публичное.** Gist читается без токена; текст последней удачной загрузки
+  кэшируется в `localStorage` и используется при сбое сети.
+- **Редактирование — с GitHub Token**: правка названия/вида/текста, добавление,
+  удаление и сохранение в Gist. Без токена окно режимов работает «только чтение».
+- **Сохранение записывает весь файл**: экземпляр хранит промпты всех видов тестов,
+  поэтому `save()` обновляет XML целиком, а не только «свои» режимы.
 
 ### Формат файла
 
-```md
-<!-- prompts-api: каждый режим — заголовок первого уровня -->
-
-# Абзацы
-
-Текст промпта без заголовка H1.
-
-# Свой режим
-
-Ещё один промпт.
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<prompts version="1">
+  <prompt type="rt" name="Промпт для создания заданий READ"><![CDATA[
+Текст промпта в Markdown…
+]]></prompt>
+  <prompt type="mt" name="Тесты с формулами"><![CDATA[Текст промпта…]]></prompt>
+</prompts>
 ```
 
-- Одна секция `# Название` = один режим; текст до первого `#` — служебная шапка.
-- Внутренние заголовки первого уровня в тексте промпта понижаются до `##`, чтобы
-  не разрезать режим на части.
-- Файл **старого формата** (секции `## Название`, как в текущем общем Gist) читается:
-  режимы берутся по `##`, вложенные `#` считаются частью текста. При первом
-  сохранении файл переписывается в новый формат с маркером.
+- Файл можно править и руками прямо на gist.github.com: текст промпта лежит внутри
+  CDATA и читается как есть; в шапке файла — комментарий-подсказка о формате.
+- `]]>` внутри текста экранируется стандартно: `]]]]><![CDATA[>`; библиотека
+  разворачивает это при чтении.
+- Записи без `name` пропускаются; неизвестный `type` сохраняется, но такой промпт
+  не виден в редакторах (вид задают в окне режимов).
 
 ### Быстрый старт
 
@@ -307,7 +303,7 @@ const api = FilesApi.create({
 <script src="prompts-api.js"></script>
 <script>
     const prompts = PromptsApi.create({
-        preset: 'rt_v2',                 // 'mt_v2' — для Moodle-редактора
+        type: 'rt',                      // вид теста: 'rt' | 'mt' | 'ft' ('' — все промпты)
         storagePrefix: 'editor_prompts', // ключи localStorage этого редактора
         tokenProvider: () => document.getElementById('githubToken').value.trim(),
     });
@@ -319,50 +315,54 @@ const api = FilesApi.create({
     document.getElementById('btnPromptMode').addEventListener('click', () => prompts.openDialog());
 
     // отправка в модель: текст активного режима
-    const message = buildDsPrompt(prompts.getPromptText()) + '\n\nXML-ЗАДАНИЕ:\n' + xml;
+    const message = prompts.getPromptText() + '\n\nXML-ЗАДАНИЕ:\n' + xml;
 </script>
 ```
+
+Старая опция `preset: 'rt_v2' | 'mt_v2'` по-прежнему принимается и трактуется как
+вид теста (`rt` / `mt`).
 
 ### API
 
 | Метод | Описание |
 |---|---|
-| `load(opts?)` | Загрузить базовые режимы и (при наличии токена) режимы из Gist → `{modes, errors, gistUrl}`. Ошибки сети не бросаются, а попадают в `errors` |
-| `save(opts?)` | Записать все режимы в Gist (создать приватный или обновить привязанный) → `{gistId, gistUrl, rawUrl, count}`. Требует токен |
-| `listModes()` | `[{id, name, source, builtin, chars, empty}]` |
-| `getPrompt(id)` / `getActivePrompt()` | Копия режима `{id, name, text, source, builtin, chars}` |
+| `load(opts?)` | Прочитать XML из Gist (без токена) → `{modes, errors, gistUrl}`. При сбое сети данные берутся из кэша |
+| `save(opts?)` | Записать все промпты (все виды тестов) обратно в XML → `{gistId, gistUrl, rawUrl, count}`. Требует токен |
+| `listModes()` | `[{id, name, type, typeLabel, source, chars, empty}]` — промпты своего вида теста |
+| `getPrompt(id)` / `getActivePrompt()` | Копия промпта `{id, name, type, text, source, chars}` |
 | `getModeId()` / `setMode(id)` | Текущий режим и переключение (событие `mode-change`). Неизвестный id → `NOT_FOUND` |
 | `getPromptText()` | Текст активного промпта — то, что уходит в модель |
-| `addMode({name, text})` | Добавить свой режим. Требует токен; повтор названия → `VALIDATION` |
-| `updateMode(id, {name?, text?})` | Переименовать/изменить свой режим. Базовый → `READONLY_BUILTIN` |
-| `removeMode(id)` | Удалить свой режим |
+| `addMode({name, type?, text})` | Добавить промпт (вид теста по умолчанию — из `type` экземпляра). Требует токен; повтор названия в том же виде теста → `VALIDATION` |
+| `updateMode(id, {name?, type?, text?})` | Переименовать / сменить вид теста / изменить текст. Требует токен |
+| `removeMode(id)` | Удалить промпт. Требует токен |
 | `hasUnsavedChanges()` | Есть ли правки, не записанные в Gist |
 | `setGist(ref)` / `getGistUrl()` | Ссылка на общий Gist (можно сменить) |
 | `setToken('github', t)` / `getToken()` / `hasToken()` / `clearToken()` | Токен. При наличии `tokenProvider` его непустой результат важнее сохранённого |
 | `openDialog()` / `closeDialog()` / `isDialogOpen()` | Большое окно режимов |
 | `on(event, fn)` | Подписка; возвращает функцию отписки |
 
-Статические функции: `PromptsApi.parsePromptsMarkdown(md)`, `buildPromptsMarkdown(items)`,
-`splitTitle(text)`, `promptIdFromTitle(title)`, `gistIdFromRef(ref)`, пресеты
-`PromptsApi.PRESETS` (`rt_v2`, `mt_v2`), `PromptsApi.DEFAULT_PROMPTS_GIST_URL`.
+Статические функции: `PromptsApi.parsePromptsXml(xml)`, `buildPromptsXml(items)`,
+`normalizeType(type)`, `TYPE_LABELS`, `promptIdFromTitle(title)`, `gistIdFromRef(ref)`,
+`PromptsApi.DEFAULT_PROMPTS_GIST_URL`.
 
 События: `load`, `mode-change`, `prompts-change`, `save`, `token-change`, `status`,
 `dialog-open`, `dialog-close`. Коды ошибок `PromptsApiError`: `TOKEN_REQUIRED`,
-`TOKEN_INVALID`, `VALIDATION`, `NOT_FOUND`, `READONLY_BUILTIN`, `EMPTY`, `BUSY`,
-`BAD_REF`, `BAD_SERVICE`, `NETWORK`, `HTTP`, `DOM_REQUIRED`.
+`TOKEN_INVALID`, `VALIDATION`, `NOT_FOUND`, `EMPTY`, `BUSY`, `BAD_REF`, `BAD_SERVICE`,
+`NETWORK`, `HTTP`, `DOM_REQUIRED`.
 
 ### Окно режимов
 
 `openDialog()` открывает большое модальное окно (до 1080 px, 88 vh), внутри:
 
-- выпадающий список режимов (названия — заголовки H1 их промптов);
-- предпросмотр: какой именно промпт будет использован, источник и размер;
+- выпадающий список промптов своего вида теста (если экземпляр создан без `type` —
+  всех, с пометкой вида теста);
+- предпросмотр: вид теста, источник, размер текста;
 - выбор в списке только показывает промпт — режим переключается кнопкой
   **«Применить режим»**;
-- **«+ Добавить режим»**, **«✎ Изменить»**, **«Удалить»** для своих режимов
-  (базовые защищены от правки и удаления);
-- поле GitHub Token, если токен не задан, с пояснением, что доступны только
-  два базовых режима;
+- **«+ Добавить режим»** с выбором вида теста; **«✎ Изменить»** правит название,
+  вид теста и текст; **«Удалить»** — удаляет;
+- без GitHub Token кнопки правки заблокированы и показывается поле токена
+  с пояснением;
 - строка Gist: указать ссылку, **«↻ Из Gist»**, **«💾 Сохранить в Gist»**.
 
 Все стили окна инжектируются из `prompts-api.js` (классы `pa-*`) — в редакторе
@@ -370,41 +370,27 @@ const api = FilesApi.create({
 
 ### Интеграция в редакторы
 
-1. Положить `prompts-api.js` рядом с `editor/app.js` и подключить перед `app.js`.
-2. Создать экземпляр с пресетом редактора и `tokenProvider`, читающим существующее
-   поле GitHub Token из настроек:
+1. Положить `prompts-api.js` рядом с `app.js` и подключить перед ним.
+2. Создать экземпляр с видом теста и `tokenProvider`:
    ```js
    const prompts = PromptsApi.create({
-       preset: 'rt_v2',                       // или 'mt_v2'
-       storagePrefix: 'editor_rt_prompts',    // у mt_v2 — свой префикс
+       type: 'mt',                            // 'rt' | 'mt' | 'ft'
+       storagePrefix: 'editor_mt_prompts',    // у каждого редактора свой префикс
        tokenProvider: () => getGithubToken(),
    });
    prompts.load();   // результат придёт в события load / status
    ```
-3. Заменить нативный `<select id="dsModeSelect">` на кнопку с названием текущего
-   режима; по клику — `prompts.openDialog()`. Список и предпросмотр теперь живут
-   в окне, а не в панели под XML.
-4. В `buildDsMessage()` брать промпт через `prompts.getPromptText()` вместо
-   `getPromptById(currentDsMode())`.
-5. Удалить из `app.js` старый блок «Промпты DeepSeek» (≈200 строк: `BUILTIN_PROMPTS`,
-   `parsePromptsMarkdown`, `buildPromptsMarkdown`, `loadPromptsFromGists`,
-   `renderPromptList`, `openPromptEditor` и разметку `promptsModal` /
-   `promptEditorModal`), а из `index.html` — соответствующие модальные окна.
-6. Старые ключи `localStorage` (`editor_deepseek_mode`, `editor_ds_prompt_edits`,
-   `editor_prompts_gist_url`) больше не нужны: выбор режима и ссылка на Gist
-   хранятся под префиксом `storagePrefix`.
+3. Кнопку текущего режима открывать через `prompts.openDialog()`; текст для модели
+   брать через `prompts.getPromptText()`.
 
-> **Про миграцию Gist.** Текущий общий Gist (`2f9804a3…`) ещё в старом формате
-> `## Название` и содержит три заголовка H1 внутри текста. `prompts-api.js`
-> прочитает его терпимо, но при первом «Сохранить в Gist» перепишет в новый
-> формат `# Название`. После этого старые версии редакторов (со своим парсером
-> `## `) перестанут видеть режимы — переключайте оба редактора одновременно
-> или укажите им новый Gist.
+> **Хранилище.** Файл `prompts.xml` в Gist `2f9804a3…` — единственный источник
+> промптов для всех трёх редакторов. Правки одного редактора (например, нового
+> промпта для mt) после сохранения появляются в остальных после «↻ Из Gist».
 
 ### Тесты
 
 ```bash
-node tests/prompts.test.js   # 29 проверок: разбор формата, режимы, токен, Gist, события
+node tests/prompts.test.js   # 28 проверок: XML-формат, виды тестов, токен, Gist, события
 ```
 
 ---

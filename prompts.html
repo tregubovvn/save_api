@@ -42,9 +42,9 @@
 <div class="wrap">
 
     <div class="card">
-        <h1>Prompts API — режимы редактора</h1>
-        <p class="sub">Выбор промпта переключает режим работы редактора. Окно режимов: выпадающий список,
-            просмотр промпта выбранного режима, добавление своих режимов и сохранение всех режимов в один Gist.</p>
+        <h1>Prompts API — все промпты в одном XML на Gist</h1>
+        <p class="sub">Все промпты всех редакторов (rt / mt / ft) хранятся в одном файле prompts.xml на GitHub Gist:
+            у каждого промпта — название режима, вид теста и Markdown-текст. Чтение — без токена, редактирование — с GitHub Token.</p>
     </div>
 
     <div class="card">
@@ -64,10 +64,10 @@
     <div class="card">
         <h2 style="margin: 0 0 4px; font-size: 15px;">Как это работает</h2>
         <ol>
-            <li>Режим = промпт. Название режима — заголовок первого уровня (<code># Название</code>) в тексте промпта.</li>
-            <li>Два базовых режима доступны всегда: их текст берётся из их собственных публичных Gist'ов.</li>
-            <li>Без GitHub Token доступны только эти два режима; свои режимы хранятся в одном Gist и требуют токен.</li>
-            <li>«Применить режим» переключает редактор, «Изменить» правит промпт, «Сохранить в Gist» записывает все режимы в один файл.</li>
+            <li>Один публичный Gist — один файл <code>prompts.xml</code>: <code>&lt;prompt type="rt|mt|ft" name="Название"&gt;</code> с Markdown-текстом внутри CDATA.</li>
+            <li>Чтение — публичное, без токена: все режимы видны всегда; текст кэшируется в localStorage на случай сбоя сети.</li>
+            <li>Правка (название, вид теста, текст, добавление, удаление) и сохранение — только с GitHub Token.</li>
+            <li>«Применить режим» переключает редактор, «Сохранить в Gist» записывает все промпты обратно в один XML.</li>
         </ol>
     </div>
 
@@ -91,16 +91,15 @@
     }
 
     const prompts = PromptsApi.create({
-        preset: 'rt_v2',
         storagePrefix: 'promptsApiDemo',
-        dialogTitle: 'Режим работы редактора RE:AD',
+        dialogTitle: 'Режимы редактора (все виды тестов)',
     });
 
     function renderActive() {
         const prompt = prompts.getActivePrompt();
         document.getElementById('modeName').textContent = prompt ? prompt.name : 'режим не выбран';
         document.getElementById('modeMeta').textContent = prompt
-            ? (prompt.builtin ? 'базовый режим' : 'из Gist') + ' · ' + prompt.chars + ' символов'
+            ? (prompt.type ? (PromptsApi.TYPE_LABELS[prompt.type] || prompt.type) + ' · ' : '') + prompt.chars + ' символов'
             : '';
         document.getElementById('activePrompt').textContent = prompt && prompt.text
             ? prompt.text
